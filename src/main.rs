@@ -22,6 +22,7 @@ fn main() {
             .and_then(|lines| if lines.len() < 2 { None } else { Some(lines) })
     };
 
+    // Collect existing Rust tags into array of [(ISO-like date, tag name)]
     let rust_tags: Vec<(String, String)> = String::from_utf8(
         Command::new("git")
             .args(&[
@@ -45,6 +46,8 @@ fn main() {
     })
     .collect();
 
+    // Read every two lines - first should be Rust commit with submodule bump
+    // The second line should specify RLS commit range "start...end"
     while let Some(lines) = read_two_lines() {
         let rust_commit_hash = lines[0].trim();
         let rls_commit_range = match &lines[1].trim()["Submodule src/tools/rls ".len()..] {
@@ -57,7 +60,6 @@ fn main() {
             }
             range => range,
         };
-        dbg!(&rls_commit_range);
 
         let parent_details = String::from_utf8(
             Command::new("git")
@@ -84,6 +86,7 @@ fn main() {
             Ok(idx) => idx,
             Err(idx) => idx,
         };
+        // Most recent Rust tag release for a given "parent" (Rust repo) commit
         let parent_release = rust_tags
             .get(release_idx - 1)
             .map(|(_, b)| b.as_ref())
@@ -107,6 +110,9 @@ fn main() {
             )
             .unwrap();
 
+            // Assuming RLS repo has `upstream` remote set to rust-lang/rls, check
+            // if the children commit in range is contained in the master history
+            // (is an ancestor)
             let is_ancestor = Command::new("git")
                 .args(&["merge-base", "--is-ancestor", &commit, "upstream/master"])
                 .current_dir(RLS_REPO_PATH)
