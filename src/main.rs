@@ -18,14 +18,14 @@ fn main() {
     let mut stdin = stdin.lock();
     let mut stdout = stdout.lock();
 
-    // Collect existing Rust tags into array of [(ISO-like date, tag name)]
+    // Collect existing Rust tags into array of [(ISO date, tag name)]
     let rust_tags: Vec<(String, String)> = String::from_utf8(
         Command::new("git")
             .args(&[
                 "tag",
                 "-l",
                 "--sort=creatordate",
-                "--format=%(creatordate:iso)|%(refname:short)",
+                "--format=%(creatordate:iso-strict)|%(refname:short)",
             ])
             .current_dir(RUST_REPO_PATH)
             .output()
@@ -61,7 +61,7 @@ fn main() {
 
         let parent_details = String::from_utf8(
             Command::new("git")
-                .args(&["log", "-n", "1", "--pretty=%ci%x09%H", rust_commit_hash])
+                .args(&["log", "-n", "1", "--pretty=%cI%x09%H", rust_commit_hash])
                 .current_dir(RUST_REPO_PATH)
                 .output()
                 .unwrap()
