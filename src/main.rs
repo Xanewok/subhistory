@@ -5,22 +5,18 @@ use std::process::Command;
 const RUST_REPO_PATH: &str = "/home/xanewok/repos/rust";
 const RLS_REPO_PATH: &str = "/home/xanewok/repos/rls";
 
+fn read_line(read: &mut impl BufRead) -> Option<String> {
+    let mut line = String::new();
+    read.read_line(&mut line)
+        .ok()
+        .and_then(|read_bytes| if read_bytes == 0 { None } else { Some(line) })
+}
+
 fn main() {
     let stdin = std::io::stdin();
-    let mut stdin = stdin.lock();
     let stdout = std::io::stdout();
+    let mut stdin = stdin.lock();
     let mut stdout = stdout.lock();
-
-    let mut read_two_lines = || {
-        (0..2)
-            .map(|_| {
-                let mut line = String::new();
-                let read = stdin.read_line(&mut line).ok();
-                read.and_then(|read| if read == 0 { None } else { Some(line) })
-            })
-            .collect::<Option<Vec<String>>>()
-            .and_then(|lines| if lines.len() < 2 { None } else { Some(lines) })
-    };
 
     // Collect existing Rust tags into array of [(ISO-like date, tag name)]
     let rust_tags: Vec<(String, String)> = String::from_utf8(
@@ -48,9 +44,11 @@ fn main() {
 
     // Read every two lines - first should be Rust commit with submodule bump
     // The second line should specify RLS commit range "start...end"
-    while let Some(lines) = read_two_lines() {
-        let rust_commit_hash = lines[0].trim();
-        let rls_commit_range = match &lines[1].trim()["Submodule src/tools/rls ".len()..] {
+    while let (Some(rust_commit_hash), Some(rls_commit_range)) =
+        (read_line(&mut stdin), read_line(&mut stdin))
+    {
+        let rust_commit_hash = rust_commit_hash.trim();
+        let rls_commit_range = match &rls_commit_range.trim()["Submodule src/tools/rls ".len()..] {
             range if range.ends_with(':') => &range[..range.len() - ":".len()],
             range if range.ends_with(" (new submodule)") => {
                 &range[..range.len() - " (new submodule)".len()]
