@@ -42,6 +42,7 @@ fn main() {
     })
     .collect();
 
+    let mut orphan_ranges = vec![];
     // Read every two lines - first should be Rust commit with submodule bump
     // The second line should specify RLS commit range "start...end"
     while let (Some(rust_commit_hash), Some(rls_commit_range)) =
@@ -97,6 +98,7 @@ fn main() {
             parent_details.trim(),
         );
 
+        let mut orphans = vec![];
         for commit in children_commits {
             let details = String::from_utf8(
                 Command::new("git")
@@ -119,8 +121,17 @@ fn main() {
                 .status
                 .success();
             let status_char = if is_ancestor { '✓' } else { '❌' };
+            if !is_ancestor {
+                orphans.push(commit);
+            }
 
             let _ = writeln!(&mut stdout, "  ({}) {}", status_char, details.trim());
         }
+
+        if !orphans.is_empty() {
+            orphan_ranges.push((rust_commit_hash.to_owned(), orphans));
+        }
     }
+
+    dbg!(&orphan_ranges);
 }
