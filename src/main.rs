@@ -2,9 +2,6 @@ use std::io::BufRead;
 use std::io::Write;
 use std::process::Command;
 
-const RUST_REPO_PATH: &str = "/home/xanewok/repos/rust";
-const RLS_REPO_PATH: &str = "/home/xanewok/repos/rls";
-
 fn read_line(read: &mut impl BufRead) -> Option<String> {
     let mut line = String::new();
     read.read_line(&mut line)
@@ -13,6 +10,11 @@ fn read_line(read: &mut impl BufRead) -> Option<String> {
 }
 
 fn main() {
+    let rust_repo_path = std::env::var("RUST_REPO_PATH")
+        .unwrap_or_else(|_| String::from("/home/xanewok/repos/rust"));
+    let rls_repo_path =
+        std::env::var("RLS_REPO_PATH").unwrap_or_else(|_| String::from("/home/xanewok/repos/rls"));
+
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     let mut stdin = stdin.lock();
@@ -27,7 +29,7 @@ fn main() {
                 "--sort=creatordate",
                 "--format=%(creatordate:iso-strict)|%(refname:short)",
             ])
-            .current_dir(RUST_REPO_PATH)
+            .current_dir(&rust_repo_path)
             .output()
             .unwrap()
             .stdout,
@@ -63,7 +65,7 @@ fn main() {
         let parent_details = String::from_utf8(
             Command::new("git")
                 .args(&["log", "-n", "1", "--pretty=%cI%x09%H", rust_commit_hash])
-                .current_dir(RUST_REPO_PATH)
+                .current_dir(&rust_repo_path)
                 .output()
                 .unwrap()
                 .stdout,
@@ -72,7 +74,7 @@ fn main() {
         let children_details = String::from_utf8(
             Command::new("git")
                 .args(&["log", "--pretty=%H", rls_commit_range])
-                .current_dir(RLS_REPO_PATH)
+                .current_dir(&rls_repo_path)
                 .output()
                 .unwrap()
                 .stdout,
@@ -103,7 +105,7 @@ fn main() {
             let details = String::from_utf8(
                 Command::new("git")
                     .args(&["log", "-n", "1", "--pretty=%ci%x09%H%x09%s", &commit])
-                    .current_dir(RLS_REPO_PATH)
+                    .current_dir(&rls_repo_path)
                     .output()
                     .unwrap()
                     .stdout,
@@ -115,7 +117,7 @@ fn main() {
             // (is an ancestor)
             let is_ancestor = Command::new("git")
                 .args(&["merge-base", "--is-ancestor", &commit, "upstream/master"])
-                .current_dir(RLS_REPO_PATH)
+                .current_dir(&rls_repo_path)
                 .output()
                 .unwrap()
                 .status
