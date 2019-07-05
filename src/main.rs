@@ -1,5 +1,5 @@
+use std::collections::BTreeMap;
 use std::io::BufRead;
-use std::io::Write;
 use std::ops::Range;
 use std::path::Path;
 use std::process::Command;
@@ -13,6 +13,14 @@ impl<I: Iterator> Single for I {
             (Some(first), None) => Some(first),
             _ => None,
         }
+    }
+}
+
+fn ancestor_char(is_ancestor: bool) -> char {
+    if is_ancestor {
+        '✓'
+    } else {
+        '❌'
     }
 }
 
@@ -106,6 +114,39 @@ fn read_line(read: &mut impl BufRead) -> Option<String> {
         .and_then(|read_bytes| if read_bytes == 0 { None } else { Some(line) })
 }
 
+#[derive(Debug)]
+struct CommitWithDetails {
+    commit: String,
+    details: String,
+}
+#[derive(Debug)]
+struct ChildCommit {
+    detailed: CommitWithDetails,
+    is_ancestor: bool,
+}
+
+#[derive(Debug)]
+struct Summary<'a>(BTreeMap<&'a str, Vec<(CommitWithDetails, Vec<ChildCommit>)>>);
+
+impl std::fmt::Display for Summary<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        for (release, commits) in self.0.iter().rev() {
+            for (parent, children) in commits {
+                writeln!(f, "({}) {}", release, parent.details)?;
+                for child in children {
+                    writeln!(
+                        f,
+                        "  ({}) {}",
+                        ancestor_char(child.is_ancestor),
+                        child.detailed.details
+                    )?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 fn main() {
     let rust_repo_path = std::env::var("RUST_REPO_PATH")
         .unwrap_or_else(|_| String::from("/home/xanewok/repos/rust"));
@@ -114,9 +155,6 @@ fn main() {
 
     // let rust_repo = git2::Repository::init(&rust_repo_path).expect("Couldn't init Rust repository");
     // let rls_repo = git2::Repository::init(&rls_repo_path).expect("Couldn't init RLS repository");
-
-    let stdout = std::io::stdout();
-    let mut stdout = stdout.lock();
 
     // Collect existing Rust tags into array of [(ISO date, tag name)]
     let rust_tags: Vec<(String, String)> = String::from_utf8(
@@ -142,7 +180,8 @@ fn main() {
     })
     .collect();
 
-    let mut orphan_ranges = vec![];
+    let mut commits: BTreeMap<&str, Vec<(CommitWithDetails, Vec<ChildCommit>)>> = BTreeMap::new();
+
     let iter = read_from_stdin(Path::new(&rust_repo_path));
     // let iter = read_from_repository(&rust_repo);
     for (rust_commit_hash, rls_commit_range) in iter {
@@ -155,17 +194,6 @@ fn main() {
                 .stdout,
         )
         .unwrap();
-        let range = format!("{}...{}", rls_commit_range.start, rls_commit_range.end);
-        let children_details = String::from_utf8(
-            Command::new("git")
-                .args(&["log", "--pretty=%H", &range, "--left-right"])
-                .current_dir(&rls_repo_path)
-                .output()
-                .unwrap()
-                .stdout,
-        )
-        .unwrap();
-        let children_commits: Vec<_> = children_details.lines().map(ToOwned::to_owned).collect();
 
         let parent_date = parent_details.split_whitespace().nth(0).unwrap();
         let release_idx = match rust_tags.binary_search_by_key(&parent_date, |(date, _)| date) {
@@ -178,47 +206,59 @@ fn main() {
             .map(|(_, b)| b.as_ref())
             .unwrap_or("None");
 
-        let _ = writeln!(
-            &mut stdout,
-            "({}) {}",
-            parent_release,
-            parent_details.trim(),
-        );
-
-        let mut orphans = vec![];
-        for commit in children_commits {
-            let details = String::from_utf8(
-                Command::new("git")
-                    .args(&["log", "-n", "1", "--pretty=%ci%x09%H%x09%s", &commit])
-                    .current_dir(&rls_repo_path)
-                    .output()
-                    .unwrap()
-                    .stdout,
-            )
-            .unwrap();
-
-            // Assuming RLS repo has `upstream` remote set to rust-lang/rls, check
-            // if the children commit in range is contained in the master history
-            // (is an ancestor)
-            let is_ancestor = Command::new("git")
-                .args(&["merge-base", "--is-ancestor", &commit, "upstream/master"])
+        let range = format!("{}...{}", rls_commit_range.start, rls_commit_range.end);
+        let children_details = String::from_utf8(
+            Command::new("git")
+                .args(&["log", "--pretty=%H", &range, "--left-right"])
                 .current_dir(&rls_repo_path)
                 .output()
                 .unwrap()
-                .status
-                .success();
-            let status_char = if is_ancestor { '✓' } else { '❌' };
-            if !is_ancestor {
-                orphans.push(commit);
-            }
+                .stdout,
+        )
+        .unwrap();
 
-            let _ = writeln!(&mut stdout, "  ({}) {}", status_char, details.trim());
-        }
+        let child_commits: Vec<ChildCommit> = children_details
+            .lines()
+            .map(|commit| {
+                let details = String::from_utf8(
+                    Command::new("git")
+                        .args(&["log", "-n", "1", "--pretty=%ci%x09%H%x09%s", &commit])
+                        .current_dir(&rls_repo_path)
+                        .output()
+                        .unwrap()
+                        .stdout,
+                )
+                .unwrap();
 
-        if !orphans.is_empty() {
-            orphan_ranges.push((rust_commit_hash.to_owned(), orphans));
-        }
+                // Assuming RLS repo has `upstream` remote set to rust-lang/rls, check
+                // if the children commit in range is contained in the master history
+                // (is an ancestor)
+                let is_ancestor = Command::new("git")
+                    .args(&["merge-base", "--is-ancestor", &commit, "upstream/master"])
+                    .current_dir(&rls_repo_path)
+                    .output()
+                    .unwrap()
+                    .status
+                    .success();
+
+                ChildCommit {
+                    detailed: CommitWithDetails {
+                        commit: commit.to_string(),
+                        details: details.trim().to_owned(),
+                    },
+                    is_ancestor,
+                }
+            })
+            .collect();
+
+        commits.entry(&parent_release).or_default().push((
+            CommitWithDetails {
+                commit: rust_commit_hash.to_owned(),
+                details: parent_details.trim().to_owned(),
+            },
+            child_commits,
+        ));
     }
-
-    dbg!(&orphan_ranges);
+    
+    println!("{}", Summary(commits));
 }
