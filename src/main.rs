@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::io::BufRead;
+use std::iter::FromIterator;
 use std::ops::Range;
 use std::path::Path;
 use std::process::Command;
@@ -114,19 +115,19 @@ fn read_line(read: &mut impl BufRead) -> Option<String> {
         .and_then(|read_bytes| if read_bytes == 0 { None } else { Some(line) })
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct CommitWithDetails {
     commit: String,
     details: String,
 }
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct ChildCommit {
     detailed: CommitWithDetails,
     is_ancestor: bool,
 }
 
 #[derive(Debug)]
-struct Summary<'a>(BTreeMap<&'a str, Vec<(CommitWithDetails, Vec<ChildCommit>)>>);
+struct Summary<'a>(&'a BTreeMap<&'a str, Vec<(CommitWithDetails, Vec<ChildCommit>)>>);
 
 impl std::fmt::Display for Summary<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -259,6 +260,13 @@ fn main() {
             child_commits,
         ));
     }
-    
-    println!("{}", Summary(commits));
+
+    println!("{}", Summary(&commits));
+    println!(">>> Reduced");
+    println!("{}", Summary(&BTreeMap::from_iter(commits.into_iter().filter(|(_, commits)| {
+        commits
+            .iter()
+            .flat_map(|(_, children)| children)
+            .any(|child| !child.is_ancestor)
+    }))));
 }
