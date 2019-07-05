@@ -1,6 +1,103 @@
 use std::io::BufRead;
 use std::io::Write;
+use std::ops::Range;
+use std::path::Path;
 use std::process::Command;
+
+trait Single: Iterator {
+    fn single(self) -> Option<Self::Item>;
+}
+impl<I: Iterator> Single for I {
+    fn single(mut self) -> Option<Self::Item> {
+        match (self.next(), self.next()) {
+            (Some(first), None) => Some(first),
+            _ => None,
+        }
+    }
+}
+
+fn read_from_stdin<'a>(repo_path: &Path) -> impl Iterator<Item = (String, Range<String>)> + 'a {
+    let log = Command::new("git")
+        .current_dir(repo_path)
+        .args(&["log", "--pretty=%H", "-p", "--submodule", "src/tools/rls"])
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let rg = Command::new("rg")
+        .current_dir(repo_path)
+        .arg("^\\w")
+        .stdin(log.stdout.unwrap())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    let mut input = std::io::BufReader::new(rg.stdout.unwrap());
+
+    std::iter::from_fn(move || {
+        let (first, second) = match (read_line(&mut input), read_line(&mut input)) {
+            (Some(first), Some(second)) => Some((first, second)),
+            _ => None,
+        }?;
+
+        let rust_commit_hash = first.trim();
+        let rls_commit_range = match &second.trim()["Submodule src/tools/rls ".len()..] {
+            range if range.ends_with(':') => &range[..range.len() - ":".len()],
+            range if range.ends_with(" (new submodule)") => {
+                &range[..range.len() - " (new submodule)".len()]
+            }
+            range if range.ends_with(" (commits not present)") => {
+                &range[..range.len() - " (commits not present)".len()]
+            }
+            range => range,
+        };
+
+        let mut dots = rls_commit_range
+            .char_indices()
+            .filter(|(_idx, chr)| *chr == '.');
+        let (first, last) = (dots.nth(0).unwrap().0, dots.last().unwrap().0);
+        let range = (rls_commit_range[..(first - 1)].to_owned())
+            ..(rls_commit_range[(last + 1)..].to_owned());
+
+        Some((rust_commit_hash.to_owned(), range))
+    })
+}
+
+#[allow(unused)]
+fn read_from_repository<'a>(
+    repo: &'a git2::Repository,
+) -> impl 'a + Iterator<Item = (String, Range<String>)> {
+    let mut walker = repo.revwalk().expect("Can't create revwalker");
+    walker.set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME);
+    walker.push_head().unwrap();
+
+    walker
+        .filter_map(move |x| x.and_then(|x| repo.find_commit(x)).ok())
+        .filter_map(|x| x.parents().single().map(|parent| (x, parent)))
+        .filter_map(move |(commit, parent)| {
+            let (commit_tree, parent_tree) = (commit.tree().unwrap(), parent.tree().unwrap());
+            let mut diff_opts = git2::DiffOptions::new();
+            diff_opts.pathspec("src/tools/rls");
+
+            let diff = repo
+                .diff_tree_to_tree(Some(&commit_tree), Some(&parent_tree), Some(&mut diff_opts))
+                .expect("Can't calculate diffs");
+
+            if diff.deltas().len() == 1 {
+                Some((commit, diff))
+            } else {
+                None
+            }
+        })
+        .map(|(commit, diff)| {
+            let delta = diff.deltas().nth(0).unwrap();
+            assert_eq!(delta.new_file().path(), Some(Path::new("src/tools/rls")));
+
+            (
+                commit.id().to_string(),
+                delta.old_file().id().to_string()..delta.new_file().id().to_string(),
+            )
+        })
+}
 
 fn read_line(read: &mut impl BufRead) -> Option<String> {
     let mut line = String::new();
@@ -15,9 +112,10 @@ fn main() {
     let rls_repo_path =
         std::env::var("RLS_REPO_PATH").unwrap_or_else(|_| String::from("/home/xanewok/repos/rls"));
 
-    let stdin = std::io::stdin();
+    // let rust_repo = git2::Repository::init(&rust_repo_path).expect("Couldn't init Rust repository");
+    // let rls_repo = git2::Repository::init(&rls_repo_path).expect("Couldn't init RLS repository");
+
     let stdout = std::io::stdout();
-    let mut stdin = stdin.lock();
     let mut stdout = stdout.lock();
 
     // Collect existing Rust tags into array of [(ISO date, tag name)]
@@ -45,35 +143,22 @@ fn main() {
     .collect();
 
     let mut orphan_ranges = vec![];
-    // Read every two lines - first should be Rust commit with submodule bump
-    // The second line should specify RLS commit range "start...end"
-    while let (Some(rust_commit_hash), Some(rls_commit_range)) =
-        (read_line(&mut stdin), read_line(&mut stdin))
-    {
-        let rust_commit_hash = rust_commit_hash.trim();
-        let rls_commit_range = match &rls_commit_range.trim()["Submodule src/tools/rls ".len()..] {
-            range if range.ends_with(':') => &range[..range.len() - ":".len()],
-            range if range.ends_with(" (new submodule)") => {
-                &range[..range.len() - " (new submodule)".len()]
-            }
-            range if range.ends_with(" (commits not present)") => {
-                &range[..range.len() - " (commits not present)".len()]
-            }
-            range => range,
-        };
-
+    let iter = read_from_stdin(Path::new(&rust_repo_path));
+    // let iter = read_from_repository(&rust_repo);
+    for (rust_commit_hash, rls_commit_range) in iter {
         let parent_details = String::from_utf8(
             Command::new("git")
-                .args(&["log", "-n", "1", "--pretty=%cI%x09%H", rust_commit_hash])
+                .args(&["log", "-n", "1", "--pretty=%cI%x09%H", &rust_commit_hash])
                 .current_dir(&rust_repo_path)
                 .output()
                 .unwrap()
                 .stdout,
         )
         .unwrap();
+        let range = format!("{}...{}", rls_commit_range.start, rls_commit_range.end);
         let children_details = String::from_utf8(
             Command::new("git")
-                .args(&["log", "--pretty=%H", rls_commit_range])
+                .args(&["log", "--pretty=%H", &range, "--left-right"])
                 .current_dir(&rls_repo_path)
                 .output()
                 .unwrap()

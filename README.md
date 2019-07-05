@@ -1,5 +1,7 @@
 
 ```
-$ git --git-dir=$RUST_REPO_DIR/.git log --pretty=%H -p --submodule -- src/tools/rls | rg '^\w' | cargo run --release
+$ #export RUST_REPO_PATH=...
+$ #export RLS_REPO_PATH=...
+$ cargo run --release
 ```
 
