@@ -262,11 +262,16 @@ fn main() {
     }
 
     println!("{}", Summary(&commits));
-    println!(">>> Reduced");
-    println!("{}", Summary(&BTreeMap::from_iter(commits.into_iter().filter(|(_, commits)| {
-        commits
-            .iter()
-            .flat_map(|(_, children)| children)
-            .any(|child| !child.is_ancestor)
-    }))));
+    println!(">>> Updates containing orphan commits");
+    println!(
+        "{}",
+        Summary(&BTreeMap::from_iter(commits.into_iter().filter(
+            |(_, commits)| {
+                commits
+                    .iter()
+                    .flat_map(|(_, children)| children)
+                    .any(|child| !child.is_ancestor)
+            }
+        )))
+    );
 }
