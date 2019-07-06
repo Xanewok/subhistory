@@ -25,10 +25,10 @@ fn ancestor_char(is_ancestor: bool) -> char {
     }
 }
 
-fn read_from_stdin<'a>(repo_path: &Path) -> impl Iterator<Item = (String, Range<String>)> + 'a {
+fn read_from_stdin<'a>(repo_path: &Path, submodule_path: &'a str) -> impl Iterator<Item = (String, Range<String>)> + 'a {
     let log = Command::new("git")
         .current_dir(repo_path)
-        .args(&["log", "--pretty=%H", "-p", "--submodule", "src/tools/rls"])
+        .args(&["log", "--pretty=%H", "-p", "--submodule", submodule_path])
         .stdout(std::process::Stdio::piped())
         .spawn()
         .unwrap();
@@ -49,7 +49,7 @@ fn read_from_stdin<'a>(repo_path: &Path) -> impl Iterator<Item = (String, Range<
         }?;
 
         let rust_commit_hash = first.trim();
-        let rls_commit_range = match &second.trim()["Submodule src/tools/rls ".len()..] {
+        let rls_commit_range = match &second.trim()[format!("Submodule {} ", submodule_path).len()..] {
             range if range.ends_with(':') => &range[..range.len() - ":".len()],
             range if range.ends_with(" (new submodule)") => {
                 &range[..range.len() - " (new submodule)".len()]
@@ -71,9 +71,10 @@ fn read_from_stdin<'a>(repo_path: &Path) -> impl Iterator<Item = (String, Range<
     })
 }
 
-#[allow(unused)]
+#[cfg(feature = "libgit2")]
 fn read_from_repository<'a>(
     repo: &'a git2::Repository,
+    submodule_path: &'a str,
 ) -> impl 'a + Iterator<Item = (String, Range<String>)> {
     let mut walker = repo.revwalk().expect("Can't create revwalker");
     walker.set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME);
@@ -85,7 +86,7 @@ fn read_from_repository<'a>(
         .filter_map(move |(commit, parent)| {
             let (commit_tree, parent_tree) = (commit.tree().unwrap(), parent.tree().unwrap());
             let mut diff_opts = git2::DiffOptions::new();
-            diff_opts.pathspec("src/tools/rls");
+            diff_opts.pathspec(submodule_path);
 
             let diff = repo
                 .diff_tree_to_tree(Some(&commit_tree), Some(&parent_tree), Some(&mut diff_opts))
@@ -97,9 +98,9 @@ fn read_from_repository<'a>(
                 None
             }
         })
-        .map(|(commit, diff)| {
+        .map(move |(commit, diff)| {
             let delta = diff.deltas().nth(0).unwrap();
-            assert_eq!(delta.new_file().path(), Some(Path::new("src/tools/rls")));
+            assert_eq!(delta.new_file().path(), Some(Path::new(submodule_path)));
 
             (
                 commit.id().to_string(),
@@ -153,9 +154,10 @@ fn main() {
         .unwrap_or_else(|_| String::from("/home/xanewok/repos/rust"));
     let rls_repo_path =
         std::env::var("RLS_REPO_PATH").unwrap_or_else(|_| String::from("/home/xanewok/repos/rls"));
+    let submodule_path = std::env::var("SUBMODULE_PATH").unwrap_or_else(|_| String::from("src/tools/rls"));
 
-    // let rust_repo = git2::Repository::init(&rust_repo_path).expect("Couldn't init Rust repository");
-    // let rls_repo = git2::Repository::init(&rls_repo_path).expect("Couldn't init RLS repository");
+    #[cfg(feature = "libgit2")]
+    let rust_repo = git2::Repository::init(&rust_repo_path).expect("Couldn't init Rust repository");
 
     // Collect existing Rust tags into array of [(ISO date, tag name)]
     let rust_tags: Vec<(String, String)> = String::from_utf8(
@@ -183,8 +185,17 @@ fn main() {
 
     let mut commits: BTreeMap<&str, Vec<(CommitWithDetails, Vec<ChildCommit>)>> = BTreeMap::new();
 
-    let iter = read_from_stdin(Path::new(&rust_repo_path));
-    // let iter = read_from_repository(&rust_repo);
+    let iter = {
+        #[cfg(feature = "libgit2")]
+        {
+            read_from_repository(&rust_repo, &submodule_path)
+        }
+        #[cfg(not(feature = "libgit2"))]
+        {
+            read_from_stdin(Path::new(&rust_repo_path), &submodule_path)
+        }
+    };
+
     for (rust_commit_hash, rls_commit_range) in iter {
         let parent_details = String::from_utf8(
             Command::new("git")
